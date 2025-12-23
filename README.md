@@ -52,6 +52,10 @@ The code implements matrix methods for computing non-axisymmetric normal modes i
 
 - **`show_zeros.m`** - Visualization utility for displaying eigenvalue zeros in the complex plane.
 
+## Documentation
+
+See **`Matrix_log_exp.pdf`** for detailed mathematical formulation, derivations, and theoretical background of the methods implemented in this code.
+
 ## Usage
 
 Typical workflow:
