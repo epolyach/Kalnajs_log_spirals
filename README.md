@@ -80,6 +80,74 @@ The code requires MATLAB function libraries located at:
 - Zang, T. A. 1976, PhD thesis, MIT
 - Toomre, A. 1981, in "Structure and Evolution of Normal Galaxies"
 
+## Julia Implementation
+
+The `src/KalnajsLogSpiral/` directory contains a complete Julia rewrite of the MATLAB `NL_*.m` codes with:
+
+### Features
+
+- **Vendor-agnostic GPU acceleration** via KernelAbstractions.jl
+  - NVIDIA GPUs (CUDA.jl)
+  - AMD GPUs (AMDGPU.jl / ROCm)
+  - Apple GPUs (Metal.jl)
+  - CPU fallback
+- **Multi-GPU support** for distributed computation
+- **Float32 precision** by default for GPU efficiency
+- **Adaptive Newton refinement** for 6-8 digit precision
+
+### Quick Start
+
+```bash
+# Install dependencies
+julia --project=. -e "using Pkg; Pkg.instantiate()"
+
+# Run with default configuration
+julia --project=. run_kalnajs.jl
+
+# Run with specific config
+julia --project=. run_kalnajs.jl configs/highres.toml
+
+# Force CPU backend
+julia --project=. run_kalnajs.jl --gpu=CPU
+```
+
+### Module Structure
+
+```
+src/KalnajsLogSpiral/
+├── KalnajsLogSpiral.jl     # Main module
+├── GPUBackend.jl           # Vendor-agnostic GPU abstraction
+├── Configuration.jl        # TOML config handling
+├── Models.jl               # Toomre-Zang model
+├── OrbitIntegration.jl     # Orbit calculations
+├── BasisFunctions.jl       # W_l and N_m(α) kernel
+├── MatrixBuilder.jl        # M(ω) matrix construction
+├── GridScan.jl             # Complex ω-plane scanning
+└── NewtonSolver.jl         # Newton-Raphson solver
+```
+
+### Reference Values
+
+For Toomre-Zang n=4, m=2 disk:
+
+| Source | Ω_p | γ |
+|--------|-----|---|
+| Zang (1976) | 0.439'426 | 0.127'181 |
+| Polyachenko (refined) | 0.439'442'9284 | 0.127'204'5628 |
+
+### Configuration
+
+See `configs/default.toml` for all options. Key precision settings:
+
+```toml
+[gpu]
+precision_double = false    # Float32 for speed
+
+[cpu]
+precision_double = false    # Float32 for speed
+max_threads = 32
+```
+
 ## Authors
 
 E. V. Polyachenko, I. G. Shukhman  

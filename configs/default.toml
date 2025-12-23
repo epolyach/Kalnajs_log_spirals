@@ -1,0 +1,72 @@
+# Kalnajs Log-Spiral Eigenvalue Solver Configuration
+# Default settings for Toomre-Zang n=4, m=2 disk
+
+[physics]
+m = 2                       # Azimuthal mode number
+G = 1.0                     # Gravitational constant
+
+[model]
+L0 = 1.0                    # Angular momentum scale
+n_zang = 4                  # Zang taper exponent
+q1 = 7                      # Velocity dispersion parameter (q_zang = q1 - 1)
+
+[grid]
+# Radial and eccentricity grid
+NR = 201                    # Radial grid points
+Ne = 21                     # Eccentricity (v) grid points
+Rc_min = 1e-3               # Minimum guiding center radius
+Rc_max = 100.0              # Maximum guiding center radius
+v_min = 0.01                # Minimum circulation (v > 0 for prograde)
+
+# Alpha grid for log-spiral expansion
+N_alpha = 101               # Alpha grid points
+alpha_max = 10.0            # Maximum |α|
+
+# Radial harmonics
+l_min = -25                 # Minimum radial harmonic
+l_max = 25                  # Maximum radial harmonic
+
+# Orbit integration
+nw = 10001                  # Full orbit integration points
+nwa = 201                   # Reduced orbit grid for storage
+
+[scan]
+# Grid scan parameters (fixed for locating approximate zero)
+n_Op = 41                   # Ω_p grid points
+n_gamma = 20                # γ grid points
+Omega_p_min = 0.2           # Min pattern speed
+Omega_p_max = 0.6           # Max pattern speed
+gamma_min = 0.01            # Min growth rate
+gamma_max = 0.2             # Max growth rate
+
+[newton]
+# Newton refinement parameters
+max_iter = 50               # Maximum Newton iterations
+tol = 1e-10                 # Convergence tolerance
+delta = 1e-6                # Finite difference step
+
+# Line search
+use_line_search = true
+max_line_search = 10
+
+# Complex step derivative (more accurate than finite difference)
+use_complex_step = false
+complex_step_h = 1e-20
+
+# Convergence study (parameter exploration for 6-8 digits)
+enable_convergence_study = false
+
+[gpu]
+# GPU backend: "auto", "CUDA", "AMDGPU", "Metal", "CPU"
+backend = "auto"
+precision_double = false    # Use Float32 for speed
+devices = []                # GPU device IDs (empty = auto)
+
+[cpu]
+precision_double = false    # Use Float32 for speed
+max_threads = 32            # Maximum BLAS threads
+
+[io]
+output_path = "results"
+save_intermediate = false
+verbose = true

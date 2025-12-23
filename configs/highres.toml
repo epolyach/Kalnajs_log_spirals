@@ -1,0 +1,65 @@
+# Kalnajs Log-Spiral Eigenvalue Solver - High Resolution
+# For convergence study targeting 6-8 digit precision
+
+[physics]
+m = 2
+G = 1.0
+
+[model]
+L0 = 1.0
+n_zang = 4
+q1 = 7
+
+[grid]
+# Higher resolution grids
+NR = 401
+Ne = 41
+Rc_min = 1e-3
+Rc_max = 100.0
+v_min = 0.01
+
+# Finer alpha grid
+N_alpha = 201
+alpha_max = 10.0
+
+# More harmonics
+l_min = -35
+l_max = 35
+
+# Fine orbit integration
+nw = 20001
+nwa = 401
+
+[scan]
+# Same scan parameters (fixed)
+n_Op = 41
+n_gamma = 20
+Omega_p_min = 0.2
+Omega_p_max = 0.6
+gamma_min = 0.01
+gamma_max = 0.2
+
+[newton]
+# Tighter tolerance for Newton
+max_iter = 100
+tol = 1e-12
+delta = 1e-8
+use_line_search = true
+max_line_search = 15
+use_complex_step = false
+complex_step_h = 1e-20
+enable_convergence_study = true
+
+[gpu]
+backend = "auto"
+precision_double = false    # Float32 for GPU
+devices = []
+
+[cpu]
+precision_double = false    # Float32 for CPU
+max_threads = 32
+
+[io]
+output_path = "results_highres"
+save_intermediate = true
+verbose = true
