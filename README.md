@@ -101,14 +101,18 @@ The `src/KalnajsLogSpiral/` directory contains a complete Julia rewrite of the M
 # Install dependencies
 julia --project=. -e "using Pkg; Pkg.instantiate()"
 
-# Run with default configuration
-julia --project=. run_kalnajs.jl
+# Run with default configuration (multi-threaded)
+julia --threads=4 --project=. run_kalnajs.jl configs/default.toml
 
-# Run with specific config
-julia --project=. run_kalnajs.jl configs/highres.toml
+# Run with high-resolution config for convergence study
+julia --threads=4 --project=. run_kalnajs.jl configs/highres.toml
 
 # Force CPU backend
-julia --project=. run_kalnajs.jl --gpu=CPU
+julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=CPU
+
+# Force specific GPU backend
+julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=CUDA
+julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=AMDGPU
 ```
 
 ### Module Structure
