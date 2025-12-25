@@ -1,352 +1,319 @@
-# src/KalnajsLogSpiral/GPUBackend.jl
+# src/utils/GPUBackend.jl
 """
-Vendor-agnostic GPU backend abstraction using KernelAbstractions.jl
+GPU Backend Detection and Abstraction Layer
 
-Supports:
-- NVIDIA GPUs via CUDA.jl
-- AMD GPUs via AMDGPU.jl
-- Apple GPUs via Metal.jl
-- CPU fallback
+Provides automatic detection of GPU type (NVIDIA/AMD) and a unified interface
+for GPU operations across different backends (CUDA.jl / AMDGPU.jl).
 
-The same kernels work across all backends without modification.
+Usage:
+    using .GPUBackend
+    
+    gpu_type = detect_gpu_type()  # Returns NVIDIA, AMD, or NONE
+    if gpu_functional()
+        gpu_device!(0)
+        # ... GPU operations ...
+    end
 """
 module GPUBackend
 
-using KernelAbstractions
-
-export get_available_backends, get_backend, get_backend_type
-export to_gpu_array, to_cpu_array, synchronize_backend
-export get_device_count, set_device!, get_device_info
-export GPUBackendType, CPUBackendType, CUDABackendType, AMDGPUBackendType, MetalBackendType
-
-# ============================================================================
-# Backend Type Definitions
-# ============================================================================
-
-abstract type GPUBackendType end
-struct CPUBackendType <: GPUBackendType end
-struct CUDABackendType <: GPUBackendType end
-struct AMDGPUBackendType <: GPUBackendType end
-struct MetalBackendType <: GPUBackendType end
-
-# Global state for loaded backends
-const _cuda_available = Ref{Union{Bool, Nothing}}(nothing)
-const _amdgpu_available = Ref{Union{Bool, Nothing}}(nothing)
-const _metal_available = Ref{Union{Bool, Nothing}}(nothing)
-
-# ============================================================================
-# Backend Detection
-# ============================================================================
+export GPUType, NVIDIA, AMD, NONE
+export detect_gpu_type, get_gpu_type, gpu_functional
+export gpu_device!, gpu_devices, gpu_device_count, gpu_synchronize
+export gpu_available_memory, gpu_device_name, gpu_array_type
 
 """
-    check_cuda_available() -> Bool
-
-Check if CUDA.jl is available and functional.
+GPU vendor type enumeration
 """
-function check_cuda_available()
-    if _cuda_available[] !== nothing
-        return _cuda_available[]
-    end
-    
+@enum GPUType begin
+    NVIDIA  # CUDA-compatible GPU
+    AMD     # ROCm-compatible GPU
+    NONE    # No GPU detected
+end
+
+# Cached GPU type to avoid repeated detection
+const _cached_gpu_type = Ref{Union{GPUType, Nothing}}(nothing)
+
+# Flag to track if GPU packages are loaded
+const _cuda_loaded = Ref{Bool}(false)
+const _amdgpu_loaded = Ref{Bool}(false)
+
+"""
+    detect_gpu_type()::GPUType
+
+Detect available GPU hardware by checking for vendor-specific tools.
+- Checks for `nvidia-smi` → NVIDIA GPU detected
+- Checks for `rocm-smi` → AMD GPU detected
+- Neither found → NONE
+
+Returns: GPUType enum value
+"""
+function detect_gpu_type()::GPUType
+    # Try nvidia-smi first (most common)
     try
-        @eval begin
-            using CUDA
-            _cuda_available[] = CUDA.functional()
+        result = run(pipeline(`nvidia-smi -L`, stdout=devnull, stderr=devnull), wait=true)
+        if result.exitcode == 0
+            return NVIDIA
         end
     catch
-        _cuda_available[] = false
+        # nvidia-smi not found or failed
     end
     
-    return _cuda_available[]
-end
-
-"""
-    check_amdgpu_available() -> Bool
-
-Check if AMDGPU.jl is available and functional.
-"""
-function check_amdgpu_available()
-    if _amdgpu_available[] !== nothing
-        return _amdgpu_available[]
-    end
-    
+    # Try rocm-smi for AMD GPUs
     try
-        @eval begin
-            using AMDGPU
-            _amdgpu_available[] = AMDGPU.functional()
+        result = run(pipeline(`rocm-smi -i`, stdout=devnull, stderr=devnull), wait=true)
+        if result.exitcode == 0
+            return AMD
         end
     catch
-        _amdgpu_available[] = false
+        # rocm-smi not found or failed
     end
     
-    return _amdgpu_available[]
+    return NONE
 end
 
 """
-    check_metal_available() -> Bool
+    get_gpu_type()::GPUType
 
-Check if Metal.jl is available and functional.
+Get the detected GPU type, using cached value if available.
+Call `reset_gpu_cache!()` to force re-detection.
 """
-function check_metal_available()
-    if _metal_available[] !== nothing
-        return _metal_available[]
+function get_gpu_type()::GPUType
+    if _cached_gpu_type[] === nothing
+        _cached_gpu_type[] = detect_gpu_type()
     end
-    
-    try
-        @eval begin
-            using Metal
-            _metal_available[] = Metal.functional()
-        end
-    catch
-        _metal_available[] = false
-    end
-    
-    return _metal_available[]
+    return _cached_gpu_type[]
 end
 
 """
-    get_available_backends() -> Vector{Symbol}
+    reset_gpu_cache!()
 
-Return list of available GPU backends on this system.
+Reset the cached GPU type, forcing re-detection on next call.
 """
-function get_available_backends()
-    backends = [:CPU]
-    
-    if check_cuda_available()
-        push!(backends, :CUDA)
-    end
-    
-    if check_amdgpu_available()
-        push!(backends, :AMDGPU)
-    end
-    
-    if check_metal_available()
-        push!(backends, :Metal)
-    end
-    
-    return backends
+function reset_gpu_cache!()
+    _cached_gpu_type[] = nothing
 end
 
 """
-    get_backend(backend::Symbol=:auto) -> GPUBackendType
+    ensure_gpu_package_loaded()
 
-Get the specified backend, or auto-detect the best available.
-
-# Arguments
-- `backend`: One of `:auto`, `:CPU`, `:CUDA`, `:AMDGPU`, `:Metal`
+Ensure the appropriate GPU package is loaded based on detected GPU type.
 """
-function get_backend(backend::Symbol=:auto)
-    if backend == :auto
-        # Priority: CUDA > AMDGPU > Metal > CPU
-        if check_cuda_available()
-            return CUDABackendType()
-        elseif check_amdgpu_available()
-            return AMDGPUBackendType()
-        elseif check_metal_available()
-            return MetalBackendType()
-        else
-            return CPUBackendType()
+function ensure_gpu_package_loaded()
+    gpu_type = get_gpu_type()
+    
+    if gpu_type == NVIDIA && !_cuda_loaded[]
+        @eval Main using CUDA
+        _cuda_loaded[] = true
+    elseif gpu_type == AMD && !_amdgpu_loaded[]
+        @eval Main using AMDGPU
+        _amdgpu_loaded[] = true
+    end
+end
+
+"""
+    gpu_functional()::Bool
+
+Check if a functional GPU is available and the appropriate package is working.
+"""
+function gpu_functional()::Bool
+    gpu_type = get_gpu_type()
+    
+    if gpu_type == NVIDIA
+        try
+            ensure_gpu_package_loaded()
+            return Main.CUDA.functional()
+        catch e
+            @warn "CUDA.jl check failed: $e"
+            return false
         end
-    elseif backend == :CPU
-        return CPUBackendType()
-    elseif backend == :CUDA
-        if !check_cuda_available()
-            @warn "CUDA requested but not available, falling back to CPU"
-            return CPUBackendType()
+    elseif gpu_type == AMD
+        try
+            ensure_gpu_package_loaded()
+            return Main.AMDGPU.functional()
+        catch e
+            @warn "AMDGPU.jl check failed: $e"
+            return false
         end
-        return CUDABackendType()
-    elseif backend == :AMDGPU
-        if !check_amdgpu_available()
-            @warn "AMDGPU requested but not available, falling back to CPU"
-            return CPUBackendType()
+    end
+    
+    return false
+end
+
+"""
+    gpu_device!(id::Int)
+
+Set the active GPU device by index (0-based for consistency with CUDA convention).
+"""
+function gpu_device!(id::Int)
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        Main.CUDA.device!(id)
+    elseif gpu_type == AMD
+        # AMDGPU uses 1-based indexing internally
+        devs = Main.AMDGPU.devices()
+        if id + 1 > length(devs)
+            error("GPU device $id not found. Available devices: 0-$(length(devs)-1)")
         end
-        return AMDGPUBackendType()
-    elseif backend == :Metal
-        if !check_metal_available()
-            @warn "Metal requested but not available, falling back to CPU"
-            return CPUBackendType()
-        end
-        return MetalBackendType()
+        Main.AMDGPU.device!(devs[id + 1])
     else
-        error("Unknown backend: $backend. Valid options: :auto, :CPU, :CUDA, :AMDGPU, :Metal")
+        error("No GPU available")
     end
 end
 
-# ============================================================================
-# Array Conversion
-# ============================================================================
-
 """
-    to_gpu_array(A::AbstractArray, backend::GPUBackendType, T::Type=eltype(A))
+    gpu_devices()
 
-Convert array to GPU array for the specified backend.
+Get the list of available GPU devices.
 """
-function to_gpu_array(A::AbstractArray, ::CPUBackendType, T::Type=eltype(A))
-    return T == eltype(A) ? A : T.(A)
-end
-
-function to_gpu_array(A::AbstractArray, ::CUDABackendType, T::Type=eltype(A))
-    @eval using CUDA
-    return CuArray(T.(A))
-end
-
-function to_gpu_array(A::AbstractArray, ::AMDGPUBackendType, T::Type=eltype(A))
-    @eval using AMDGPU
-    return ROCArray(T.(A))
-end
-
-function to_gpu_array(A::AbstractArray, ::MetalBackendType, T::Type=eltype(A))
-    @eval using Metal
-    return MtlArray(T.(A))
+function gpu_devices()
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        return Main.CUDA.devices()
+    elseif gpu_type == AMD
+        return Main.AMDGPU.devices()
+    end
+    
+    return []
 end
 
 """
-    to_cpu_array(A) -> Array
+    gpu_device_count()::Int
 
-Convert GPU array back to CPU array.
+Get the number of available GPU devices.
 """
-function to_cpu_array(A::AbstractArray)
-    return Array(A)
-end
-
-# ============================================================================
-# Synchronization
-# ============================================================================
-
-"""
-    synchronize_backend(backend::GPUBackendType)
-
-Synchronize the GPU backend (wait for all operations to complete).
-"""
-synchronize_backend(::CPUBackendType) = nothing
-
-function synchronize_backend(::CUDABackendType)
-    @eval using CUDA
-    CUDA.synchronize()
-end
-
-function synchronize_backend(::AMDGPUBackendType)
-    @eval using AMDGPU
-    AMDGPU.synchronize()
-end
-
-function synchronize_backend(::MetalBackendType)
-    @eval using Metal
-    Metal.synchronize()
-end
-
-# ============================================================================
-# Device Management
-# ============================================================================
-
-"""
-    get_device_count(backend::GPUBackendType) -> Int
-
-Get the number of available devices for this backend.
-"""
-get_device_count(::CPUBackendType) = 1
-
-function get_device_count(::CUDABackendType)
-    @eval using CUDA
-    return CUDA.ndevices()
-end
-
-function get_device_count(::AMDGPUBackendType)
-    @eval using AMDGPU
-    return length(AMDGPU.devices())
-end
-
-function get_device_count(::MetalBackendType)
-    @eval using Metal
-    return length(Metal.devices())
+function gpu_device_count()::Int
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        return length(Main.CUDA.devices())
+    elseif gpu_type == AMD
+        return length(Main.AMDGPU.devices())
+    end
+    
+    return 0
 end
 
 """
-    set_device!(backend::GPUBackendType, device_id::Int)
+    gpu_synchronize()
 
-Set the active device for this backend.
+Synchronize GPU execution (wait for all GPU operations to complete).
 """
-set_device!(::CPUBackendType, ::Int) = nothing
-
-function set_device!(::CUDABackendType, device_id::Int)
-    @eval using CUDA
-    CUDA.device!(device_id)
-end
-
-function set_device!(::AMDGPUBackendType, device_id::Int)
-    @eval using AMDGPU
-    AMDGPU.device!(AMDGPU.devices()[device_id + 1])
-end
-
-function set_device!(::MetalBackendType, device_id::Int)
-    @eval using Metal
-    Metal.device!(Metal.devices()[device_id + 1])
+function gpu_synchronize()
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        Main.CUDA.synchronize()
+    elseif gpu_type == AMD
+        Main.AMDGPU.synchronize()
+    end
 end
 
 """
-    get_device_info(backend::GPUBackendType) -> NamedTuple
+    gpu_available_memory()::Int
 
-Get information about the current device.
+Get available GPU memory in bytes for the current device.
 """
-function get_device_info(::CPUBackendType)
-    return (name="CPU", memory_gb=0.0, device_id=0)
+function gpu_available_memory()::Int
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        return Main.CUDA.available_memory()
+    elseif gpu_type == AMD
+        # AMDGPU memory info
+        try
+            info = Main.AMDGPU.Runtime.Mem.info()
+            return info[1]  # Free memory
+        catch
+            return 0
+        end
+    end
+    
+    return 0
 end
-
-function get_device_info(::CUDABackendType)
-    @eval using CUDA
-    dev = CUDA.device()
-    mem_gb = round(CUDA.total_memory() / 1e9, digits=2)
-    return (name=CUDA.name(dev), memory_gb=mem_gb, device_id=Int(dev))
-end
-
-function get_device_info(::AMDGPUBackendType)
-    @eval using AMDGPU
-    dev = AMDGPU.device()
-    # AMDGPU memory query may vary by version
-    return (name=string(dev), memory_gb=0.0, device_id=0)
-end
-
-function get_device_info(::MetalBackendType)
-    @eval using Metal
-    dev = Metal.device()
-    return (name=string(dev), memory_gb=0.0, device_id=0)
-end
-
-# ============================================================================
-# KernelAbstractions Backend
-# ============================================================================
 
 """
-    get_ka_backend(backend::GPUBackendType)
+    gpu_device_name(id::Int=0)::String
 
-Get the KernelAbstractions backend for kernel launching.
+Get the name of the specified GPU device.
 """
-function get_ka_backend(::CPUBackendType)
-    return KernelAbstractions.CPU()
+function gpu_device_name(id::Int=-1)::String
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        if id >= 0
+            Main.CUDA.device!(id)
+        end
+        return Main.CUDA.name(Main.CUDA.device())
+    elseif gpu_type == AMD
+        devs = Main.AMDGPU.devices()
+        if id + 1 <= length(devs)
+            return string(devs[id + 1])
+        end
+        return "Unknown AMD GPU"
+    end
+    
+    return "No GPU"
 end
 
-function get_ka_backend(::CUDABackendType)
-    @eval using CUDA
-    return CUDABackend()
+"""
+    gpu_array_type()
+
+Get the appropriate GPU array type for the detected backend.
+Returns CuArray for NVIDIA, ROCArray for AMD.
+"""
+function gpu_array_type()
+    gpu_type = get_gpu_type()
+    ensure_gpu_package_loaded()
+    
+    if gpu_type == NVIDIA
+        return Main.CUDA.CuArray
+    elseif gpu_type == AMD
+        return Main.AMDGPU.ROCArray
+    end
+    
+    error("No GPU available - cannot determine array type")
 end
 
-function get_ka_backend(::AMDGPUBackendType)
-    @eval using AMDGPU
-    return ROCBackend()
+"""
+    print_gpu_info()
+
+Print information about detected GPU hardware.
+"""
+function print_gpu_info()
+    gpu_type = get_gpu_type()
+    
+    if gpu_type == NONE
+        println("❌ No GPU detected")
+        println("   Install nvidia-smi (NVIDIA) or rocm-smi (AMD) for GPU support")
+        return
+    end
+    
+    vendor = gpu_type == NVIDIA ? "NVIDIA (CUDA)" : "AMD (ROCm)"
+    println("🎮 GPU Backend: $vendor")
+    
+    if gpu_functional()
+        n_devices = gpu_device_count()
+        println("✅ GPU functional with $n_devices device(s)")
+        
+        for i in 0:(n_devices-1)
+            name = gpu_device_name(i)
+            println("   Device $i: $name")
+        end
+        
+        mem_gb = round(gpu_available_memory() / 1e9, digits=2)
+        println("   Available memory: $mem_gb GB")
+    else
+        println("⚠️  GPU detected but not functional")
+        println("   Check driver installation")
+    end
 end
-
-function get_ka_backend(::MetalBackendType)
-    @eval using Metal
-    return MetalBackend()
-end
-
-# ============================================================================
-# Display
-# ============================================================================
-
-Base.show(io::IO, ::CPUBackendType) = print(io, "CPU")
-Base.show(io::IO, ::CUDABackendType) = print(io, "CUDA")
-Base.show(io::IO, ::AMDGPUBackendType) = print(io, "AMDGPU (ROCm)")
-Base.show(io::IO, ::MetalBackendType) = print(io, "Metal")
 
 end # module GPUBackend

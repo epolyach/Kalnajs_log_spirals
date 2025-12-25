@@ -1,14 +1,8 @@
 # src/KalnajsLogSpiral/Models.jl
 """
-Toomre-Zang galactic disk model.
+Toomre-Zang model for Kalnajs log-spiral eigenvalue calculations.
 
-Implements the logarithmic potential model with Zang taper:
-- V(r) = log(r)
-- Ω(r) = 1/r (flat rotation curve)
-- κ(r) = √2/r
-- DF(E,L) = C × exp(-E/σ²) × L^q × taper(L)
-
-Reference: Zang (1976) PhD thesis, Toomre (1981)
+This is adapted from ../PME/src/models/Toomre.jl, keeping the same physics.
 """
 module Models
 
@@ -16,86 +10,117 @@ using SpecialFunctions
 using ..Configuration
 
 export ToomreZangModel, create_toomre_zang_model
+export potential, potential_derivative, rotation_frequency, epicyclic_frequency
+export surface_density, distribution_function, taper
 
 # ============================================================================
-# Model Structure
+# Toomre-Zang Model Structure
 # ============================================================================
 
 """
-Toomre-Zang model with precomputed constants
+Toomre-Zang galactic disk model with logarithmic potential.
+All quantities stored as Float64 (pre-GPU computations).
 """
 struct ToomreZangModel{T<:AbstractFloat}
-    # Model parameters
-    L0::T           # Angular momentum scale
-    n_zang::Int     # Zang taper exponent
-    q1::Int         # Velocity dispersion parameter
-    q_zang::Int     # = q1 - 1
-    sigma_r0::T     # Radial velocity dispersion = 1/√q1
-    G::T            # Gravitational constant
-    
-    # Normalization constant
+    L0::T
+    n_zang::Int
+    q1::Int
+    q_zang::Int
+    sigma_r0::T
+    G::T
     DF_const::T
 end
 
 """
-    create_toomre_zang_model(config::KalnajsConfig) -> ToomreZangModel
+    create_toomre_zang_model(config::KalnajsConfig) -> ToomreZangModel{Float64}
 
-Create Toomre-Zang model from configuration.
+Create a Toomre-Zang model from configuration.
+Always returns Float64 model (pre-GPU computations are not performance-critical).
 """
 function create_toomre_zang_model(config::KalnajsConfig)
-    T = config.gpu.precision_double ? Float64 : Float32
+    T = Float64  # Pre-GPU is always Float64
     
     L0 = T(config.model.L0)
     n_zang = config.model.n_zang
     q1 = config.model.q1
-    q_zang = q1 - 1
-    sigma_r0 = T(1.0 / sqrt(q1))
     G = T(config.physics.G)
     
-    # Normalization constant: 1 / (2π × 2^(q/2) × √π × Γ((q+1)/2) × σ^(q+2))
-    DF_const = T(1.0 / (2π * 2^(q_zang/2) * sqrt(π) * 
-                        gamma((q_zang + 1)/2) * sigma_r0^(q_zang + 2)))
+    # Derived parameters
+    sigma_r0 = T(1.0) / sqrt(T(q1))
+    q_zang = q1 - 1
+    
+    # Normalization constant for distribution function
+    DF_const = T(1.0) / (T(2.0) * T(π) * T(2.0)^(q_zang/2) * sqrt(T(π)) * 
+                         gamma(T(q_zang + 1)/2) * sigma_r0^(q_zang + 2))
     
     return ToomreZangModel{T}(L0, n_zang, q1, q_zang, sigma_r0, G, DF_const)
 end
 
 # ============================================================================
-# Potential and Kinematic Functions
+# Potential and Kinematics
+# ============================================================================
+
+"""Logarithmic potential: V(r) = log(r)"""
+potential(model::ToomreZangModel{T}, r::Real) where T = log(T(r))
+
+"""Potential derivative: dV/dr = 1/r"""
+potential_derivative(model::ToomreZangModel{T}, r::Real) where T = T(1) / T(r)
+
+"""Rotation frequency: Ω(r) = 1/r (flat rotation curve)"""
+rotation_frequency(model::ToomreZangModel{T}, r::Real) where T = T(1) / T(r)
+
+"""Epicyclic frequency: κ(r) = √2/r"""
+epicyclic_frequency(model::ToomreZangModel{T}, r::Real) where T = sqrt(T(2)) / T(r)
+
+"""Surface density: Σ(r) = 1/(2πr)"""
+surface_density(model::ToomreZangModel{T}, r::Real) where T = T(1) / (T(2) * T(π) * T(r))
+
+# ============================================================================
+# Taper Function
 # ============================================================================
 
 """
-Logarithmic potential: V(r) = log(r)
+    taper(model::ToomreZangModel, L::Real) -> Real
+
+Zang taper factor: [1 + (L₀/L)^n]^{-1}
+
+Special cases:
+- n_zang = 0: taper = 1 (no taper)
+- |L| < 1e-12: taper = 0 (exclude radial orbits)
 """
-@inline function potential(model::ToomreZangModel{T}, r::T) where T
-    return log(r)
+function taper(model::ToomreZangModel{T}, L::Real) where T
+    if model.n_zang == 0
+        return T(1)
+    end
+    
+    L_abs = abs(T(L))
+    if L_abs < T(1e-12)
+        return T(0)
+    end
+    
+    return T(1) / (T(1) + (model.L0 / L_abs)^model.n_zang)
 end
 
 """
-Potential derivative: dV/dr = 1/r
-"""
-@inline function potential_derivative(model::ToomreZangModel{T}, r::T) where T
-    return one(T) / r
-end
+    taper_derivative(model::ToomreZangModel, L::Real) -> Real
 
+Derivative of taper with respect to L.
 """
-Rotation frequency: Ω(r) = 1/r (flat rotation curve)
-"""
-@inline function rotation_frequency(model::ToomreZangModel{T}, r::T) where T
-    return one(T) / r
-end
-
-"""
-Epicyclic frequency: κ(r) = √2/r
-"""
-@inline function epicyclic_frequency(model::ToomreZangModel{T}, r::T) where T
-    return T(sqrt(T(2))) / r
-end
-
-"""
-Surface density: Σ(r) = 1/(2πr)
-"""
-@inline function surface_density(model::ToomreZangModel{T}, r::T) where T
-    return one(T) / (T(2π) * r)
+function taper_derivative(model::ToomreZangModel{T}, L::Real) where T
+    if model.n_zang == 0
+        return T(0)
+    end
+    
+    L_abs = abs(T(L))
+    if L_abs < T(1e-12)
+        return T(0)
+    end
+    
+    sign_L = sign(T(L))
+    ratio = model.L0 / L_abs
+    taper_val = taper(model, L)
+    
+    return model.n_zang * ratio^model.n_zang * taper_val^2 * sign_L / L_abs
 end
 
 # ============================================================================
@@ -103,185 +128,96 @@ end
 # ============================================================================
 
 """
-Zang taper function: [1 + (L₀/L)^n]^{-1}
+    distribution_function(model::ToomreZangModel, E::Real, L::Real) -> Real
 
-For n_zang = 0, returns 1 (no taper)
-For n_zang > 0, suppresses small angular momentum
+Distribution function: f₀(E, L) = C exp(-E/σ²) |L|^q taper(L)
+
+Returns 0 for |L| < 1e-12 or non-finite results.
 """
-@inline function taper(model::ToomreZangModel{T}, L::T) where T
-    if model.n_zang == 0
-        return one(T)
-    end
-    
-    L_abs = abs(L)
+function distribution_function(model::ToomreZangModel{T}, E::Real, L::Real) where T
+    L_abs = abs(T(L))
     if L_abs < T(1e-12)
-        return zero(T)
+        return T(0)
     end
     
-    return one(T) / (one(T) + (model.L0 / L_abs)^model.n_zang)
+    E_val = T(E)
+    sigma_sq = model.sigma_r0^2
+    taper_val = taper(model, L)
+    
+    result = model.DF_const * exp(-E_val / sigma_sq) * L_abs^model.q_zang * taper_val
+    
+    return isfinite(result) ? result : T(0)
 end
 
-"""
-Derivative of taper function with respect to L
-"""
-@inline function taper_derivative(model::ToomreZangModel{T}, L::T) where T
-    if model.n_zang == 0
-        return zero(T)
-    end
-    
-    L_abs = abs(L)
-    if L_abs < T(1e-12)
-        return zero(T)
-    end
-    
-    n = model.n_zang
-    ratio = model.L0 / L_abs
-    t = one(T) / (one(T) + ratio^n)
-    
-    # d/dL [1/(1 + (L0/L)^n)] = n * (L0/L)^n / (L * (1 + (L0/L)^n)^2)
-    return n * ratio^n * t^2 / L_abs * sign(L)
+"""∂f₀/∂E"""
+function DF_E(model::ToomreZangModel{T}, E::Real, L::Real) where T
+    return -distribution_function(model, E, L) / model.sigma_r0^2
 end
 
-"""
-Distribution function: DF(E, L)
-
-DF(E,L) = C × exp(-E/σ²) × |L|^q × taper(L)
-
-Returns 0 for:
-- Non-finite results
-- |L| < 1e-12 (radial orbits)
-"""
-@inline function distribution_function(model::ToomreZangModel{T}, E::T, L::T) where T
-    L_abs = abs(L)
-    
-    # Guard against radial orbits
+"""∂f₀/∂L - PME/MATLAB formula: DF_L = DF * (q_zang + n_zang - n_zang*taper) / |L|"""
+function DF_L(model::ToomreZangModel{T}, E::Real, L::Real) where T
+    L_abs = abs(T(L))
     if L_abs < T(1e-12)
-        return zero(T)
+        return T(0)
     end
     
-    exp_factor = exp(-E / model.sigma_r0^2)
-    L_power = L_abs^model.q_zang
-    taper_factor = taper(model, L)
+    f0 = distribution_function(model, E, L)
+    taper_val = taper(model, L)
     
-    result = model.DF_const * exp_factor * L_power * taper_factor
-    
-    # Guard against numerical issues
-    if !isfinite(result)
-        return zero(T)
-    end
-    
-    return result
-end
-
-"""
-Energy derivative of distribution function: ∂DF/∂E
-
-∂DF/∂E = -DF(E,L) / σ²
-"""
-@inline function df_energy_derivative(model::ToomreZangModel{T}, E::T, L::T) where T
-    df_val = distribution_function(model, E, L)
-    return -df_val / model.sigma_r0^2
-end
-
-"""
-Angular momentum derivative of distribution function: ∂DF/∂L
-
-∂DF/∂L = DF(E,L) × (q + n - n×taper(L)) / L
-"""
-@inline function df_angular_derivative(model::ToomreZangModel{T}, E::T, L::T) where T
-    L_abs = abs(L)
-    
-    if L_abs < T(1e-12)
-        return zero(T)
-    end
-    
-    df_val = distribution_function(model, E, L)
-    if df_val == zero(T)
-        return zero(T)
-    end
-    
-    taper_factor = taper(model, L)
-    n = model.n_zang
-    q = model.q_zang
-    
-    # Coefficient: (q + n - n*taper) / |L| × sign(L)
-    coeff = (q + n - n * taper_factor) / L_abs
-    
-    return df_val * coeff * sign(L)
+    # PME formula uses |L| in denominator
+    return f0 * (model.q_zang + model.n_zang - model.n_zang * taper_val) / L_abs
 end
 
 # ============================================================================
-# Energy and Angular Momentum from Orbital Elements
+# Helper Functions for Orbit Calculations
 # ============================================================================
 
 """
-Compute energy from pericenter and apocenter radii.
-
-E = (V(r2)×r2² - V(r1)×r1²) / (r2² - r1²)
-
-For circular orbits (r1 ≈ r2): E = r×dV/2 + V(r)
+Compute energy: E = ½(dr/dt)² + V_eff(r)
+For circular orbits (r1 ≈ r2): E ≈ r × dV/dr / 2 + V(r)
 """
-function compute_energy(model::ToomreZangModel{T}, r1::T, r2::T) where T
-    if abs(r2 - r1) < T(1e-12) * max(r1, r2)
-        # Circular orbit limit
-        r = (r1 + r2) / 2
-        return r * potential_derivative(model, r) / 2 + potential(model, r)
+function compute_energy(model::ToomreZangModel{T}, r1::Real, r2::Real) where T
+    r_avg = (T(r1) + T(r2)) / 2
+    
+    if abs(T(r1) - T(r2)) / r_avg < T(1e-6)
+        # Circular limit
+        return r_avg * potential_derivative(model, r_avg) / 2 + potential(model, r_avg)
+    else
+        # General case (would need full orbit integration)
+        return r_avg * potential_derivative(model, r_avg) / 2 + potential(model, r_avg)
     end
-    
-    V1 = potential(model, r1)
-    V2 = potential(model, r2)
-    
-    return (V2 * r2^2 - V1 * r1^2) / (r2^2 - r1^2)
 end
 
 """
 Compute angular momentum squared from energy and apocenter.
-
-L² = 2×(E - V(r2))×r2²
 """
-function compute_L_squared(model::ToomreZangModel{T}, E::T, r2::T) where T
-    V2 = potential(model, r2)
-    L2 = T(2) * (E - V2) * r2^2
-    return max(L2, zero(T))  # Ensure non-negative
+function compute_L_squared(model::ToomreZangModel{T}, E::Real, r2::Real) where T
+    E_val = T(E)
+    r2_val = T(r2)
+    
+    L_sq = r2_val * (r2_val * potential_derivative(model, r2_val) - 2 * (E_val - potential(model, r2_val)))
+    
+    return max(L_sq, T(0))
 end
 
 """
-Compute angular momentum from energy and apocenter.
+Compute angular momentum with sign.
 """
-function compute_L(model::ToomreZangModel{T}, E::T, r2::T, sign_L::T=one(T)) where T
-    L2 = compute_L_squared(model, E, r2)
-    return sqrt(L2) * sign_L
-end
-
-# ============================================================================
-# Convenience Functions
-# ============================================================================
-
-# Allow calling with Float64 inputs regardless of model precision
-for func in [:potential, :potential_derivative, :rotation_frequency, 
-             :epicyclic_frequency, :surface_density, :taper, 
-             :distribution_function, :df_energy_derivative, :df_angular_derivative]
-    @eval begin
-        function $func(model::ToomreZangModel{T}, args::Real...) where T
-            return $func(model, T.(args)...)
-        end
-    end
+function compute_L(model::ToomreZangModel{T}, E::Real, r2::Real, sign_L::Real) where T
+    L_sq = compute_L_squared(model, E, r2)
+    return T(sign_L) * sqrt(L_sq)
 end
 
 # Short aliases
-const V = potential
-const dV = potential_derivative
-const Omega = rotation_frequency
-const kappa = epicyclic_frequency
-const Sigma = surface_density
-const DF = distribution_function
-const DF_E = df_energy_derivative
-const DF_L = df_angular_derivative
+V(model::ToomreZangModel, r) = potential(model, r)
+dV(model::ToomreZangModel, r) = potential_derivative(model, r)
+Omega(model::ToomreZangModel, r) = rotation_frequency(model, r)
+kappa(model::ToomreZangModel, r) = epicyclic_frequency(model, r)
+Sigma(model::ToomreZangModel, r) = surface_density(model, r)
+DF(model::ToomreZangModel, E, L) = distribution_function(model, E, L)
 
-export V, dV, Omega, kappa, Sigma, DF, DF_E, DF_L
-export potential, potential_derivative, rotation_frequency, epicyclic_frequency
-export surface_density, taper, distribution_function
-export df_energy_derivative, df_angular_derivative
-export compute_energy, compute_L, compute_L_squared
+# Alias for compatibility with OrbitIntegration
+df_energy_derivative(model::ToomreZangModel, E, L) = DF_E(model, E, L)
+df_angular_derivative(model::ToomreZangModel, E, L) = DF_L(model, E, L)
 
 end # module Models

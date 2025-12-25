@@ -1,11 +1,8 @@
 # src/KalnajsLogSpiral/MatrixBuilder.jl
 """
-M(ω) matrix construction for log-spiral eigenvalue problem.
+Matrix assembly and determinant computation for Kalnajs log-spiral eigenvalue problem.
 
-Builds the matrix M(β,α;ω) from Eq. 45:
-M = G × Σ_l W_l^T × diag(DJ × F0l / (ω - Ω_res)) × W_l^* × N_kernel
-
-Then computes det(I - M·dα) for eigenvalue search.
+Builds M(β,α;ω) and computes det(I - M·dα) with GPU acceleration.
 """
 module MatrixBuilder
 
@@ -14,157 +11,236 @@ using ..Configuration
 using ..GPUBackend
 using ..BasisFunctions
 
-export build_M_matrix, compute_determinant
+export compute_determinant, compute_determinant_batched
+export build_M_matrix  # For debugging
 
 # ============================================================================
-# M Matrix Construction
+# CPU Implementation
 # ============================================================================
 
 """
-    build_M_matrix(omega::Complex, precomputed::PrecomputedData, backend) -> Matrix{Complex}
+    build_M_matrix_cpu(omega::Complex, precomputed, Tcpu::Type) -> Matrix{Complex{Tcpu}}
 
-Build the M(β,α;ω) matrix from Eq. 45.
-
-M[β,α] = G × Σ_l W_l[β]^T × diag(DJ × F0l / (ω - Ω_res)) × W_l[α]^*
-
-where the sum is over radial harmonics l.
-
-# Arguments
-- `omega`: Complex frequency ω = m×Ω_p + i×γ
-- `precomputed`: Precomputed ω-independent data
-- `backend`: GPU backend type
-
-# Returns
-- M matrix of size [N_alpha, N_alpha]
+Build M matrix on CPU in the specified precision.
+M[β,α] = G × Σ_l W_l^T(β) × diag(DJ × F0l / (ω - Ω_res)) × W_l^*(α) × N_kernel(α)
 """
-function build_M_matrix(omega::Complex{T}, precomputed::PrecomputedData{T},
-                        backend::GPUBackend.GPUBackendType) where T
-    
+function build_M_matrix_cpu(omega::Complex{T}, precomputed::PrecomputedData{T}, 
+                            Tcpu::Type) where T
     N_alpha = precomputed.N_alpha
     n_l = precomputed.n_l
     NPh = precomputed.NPh
-    G = precomputed.G
+    G = Tcpu(precomputed.G)
     
-    # Initialize M matrix
-    CT = Complex{T}
+    CT = Complex{Tcpu}
     M = zeros(CT, N_alpha, N_alpha)
+    omega_tcpu = CT(omega)
     
-    # Loop over radial harmonics
+    # Reshape W_l for easier indexing: W_l_mat is [NPh, N_alpha, n_l]
     for i_l in 1:n_l
-        # Resonance denominator: ω - (l×Ω₁ + m×Ω₂)
-        denom = omega .- precomputed.Omega_res[:, i_l]
+        # Extract W_l[:, :, i_l] for this harmonic
+        W = CT.(precomputed.W_l_mat[:, :, i_l])  # [NPh, N_alpha] (complex)
         
-        # Avoid division by zero near resonances
-        small_idx = abs.(denom) .< T(1e-12)
+        # Compute denominator: ω - Ω_res
+        denom = omega_tcpu .- CT.(precomputed.Omega_res[:, i_l])
+        
+        # Avoid near-zero denominators
+        small_idx = abs.(denom) .< Tcpu(1e-12)
         denom[small_idx] .= CT(1e-12 + 1e-12im)
         
-        # Weight vector: DJ × F0l / denom
-        weight = precomputed.DJ_vec .* precomputed.F0l_all[:, i_l] ./ denom
+        # Weight: DJ × F0l / (ω - Ω_res)
+        weight = Tcpu.(precomputed.DJ_vec) .* Tcpu.(precomputed.F0l_all[:, i_l]) ./ denom
         
-        # W_l matrix for this harmonic [NPh, N_alpha]
-        W = precomputed.W_l_mat[:, :, i_l]
-        
-        # M += W^T × diag(weight) × conj(W)
-        # This is: M[β,α] = Σ_J weight[J] × W[J,β] × W[J,α]*
-        M .+= transpose(W) * (weight .* conj.(W))
+        # Accumulate: M += W^T × diag(weight) × conj(W)
+        # This is: M += transpose(W) * (weight .* conj.(W))
+        for α in 1:N_alpha
+            for β in 1:N_alpha
+                M[β, α] += sum(W[:, β] .* weight .* conj.(W[:, α]))
+            end
+        end
     end
     
-    # Apply gravitational constant and N_kernel
+    # Apply G and N_kernel scaling
     M .*= G
-    
-    # Apply N_kernel as diagonal scaling: M[β,α] *= N_kernel[α]
     for α in 1:N_alpha
-        M[:, α] .*= precomputed.N_kernel[α]
+        M[:, α] .*= Tcpu(precomputed.N_kernel[α])
     end
     
     return M
 end
 
 """
-    build_M_matrix_batched(omegas::Vector{Complex}, precomputed, backend) -> Vector{Matrix}
+    compute_determinant_cpu(omega::Complex, precomputed, Tcpu::Type) -> Complex{Tcpu}
 
-Build M matrices for multiple ω values (for grid scan).
-
-This can be parallelized across GPUs.
+Compute det(I - M·dα) on CPU in the specified precision.
 """
-function build_M_matrix_batched(omegas::Vector{Complex{T}}, precomputed::PrecomputedData{T},
-                                backend::GPUBackend.GPUBackendType) where T
+function compute_determinant_cpu(omega::Complex{T}, precomputed::PrecomputedData{T},
+                                 Tcpu::Type) where T
+    M = build_M_matrix_cpu(omega, precomputed, Tcpu)
     
-    n_omega = length(omegas)
-    M_matrices = Vector{Matrix{Complex{T}}}(undef, n_omega)
+    N_alpha = precomputed.N_alpha
+    CT = Complex{Tcpu}
+    I_mat = Matrix{CT}(I, N_alpha, N_alpha)
     
-    # Simple loop - can be parallelized with @threads or distributed
-    Threads.@threads for i in 1:n_omega
-        M_matrices[i] = build_M_matrix(omegas[i], precomputed, backend)
-    end
-    
-    return M_matrices
+    # d_alpha is already included in N_kernel, so just compute det(I - M)
+    det_val = det(I_mat - M)
+    return det_val
 end
 
 # ============================================================================
-# Determinant Computation
+# GPU Implementation (avoiding scalar indexing)
 # ============================================================================
 
 """
-    compute_determinant(omega::Complex, precomputed, backend) -> Complex
+    build_M_matrix_gpu(omega::Complex{Tgpu}, devprecomp::DevicePrecomputed{Tgpu}, 
+                       gpu_type) -> Matrix{Complex{Tgpu}} (on device)
 
-Compute det(I - M·dα) for the given ω.
-
-The eigenvalue equation is det(I - M) = 0 where M already includes dα integration weights.
+Build M matrix on GPU. Returns device array.
+All operations avoid scalar indexing by using broadcasting and matrix ops.
 """
-function compute_determinant(omega::Complex{T}, precomputed::PrecomputedData{T},
-                             backend::GPUBackend.GPUBackendType) where T
+function build_M_matrix_gpu(omega::Complex{Tgpu}, devprecomp::DevicePrecomputed{Tgpu,AT},
+                           gpu_type) where {Tgpu,AT}
     
-    M = build_M_matrix(omega, precomputed, backend)
+    DevArray = GPUBackend.gpu_array_type()
+    
+    N_alpha = devprecomp.N_alpha
+    n_l = devprecomp.n_l
+    NPh = devprecomp.NPh
+    G = devprecomp.G
+    
+    CT = Complex{Tgpu}
+    M = DevArray(zeros(CT, N_alpha, N_alpha))
+    
+    # Pre-transfer small arrays to CPU for manipulation, build on CPU, then do GPU math
+    DJ_vec = devprecomp.DJ_vec  # CPU array
+    F0l_all = devprecomp.F0l_all  # CPU array
+    Omega_res = devprecomp.Omega_res  # CPU array
+    N_kernel = devprecomp.N_kernel  # CPU array
+    
+    for i_l in 1:n_l
+        # W_l is on device: devprecomp.W_l_mat[:, :, i_l]
+        W = devprecomp.W_l_mat[:, :, i_l]  # [NPh, N_alpha] on device
+        
+        # Compute weight on CPU, then transfer
+        denom_cpu = omega .- CT.(Omega_res[:, i_l])
+        small_idx = abs.(denom_cpu) .< Tgpu(1e-12)
+        denom_cpu[small_idx] .= CT(1e-12 + 1e-12im)
+        
+        weight_cpu = CT.(DJ_vec) .* CT.(F0l_all[:, i_l]) ./ denom_cpu
+        weight_dev = DevArray(weight_cpu)  # [NPh] on device
+        
+        # GPU computation: W^T × diag(weight) × conj(W)
+        # Reshape weight for broadcasting: [NPh, 1]
+        weight_col = reshape(weight_dev, :, 1)
+        
+        # W_weighted = W .* weight (broadcast weight across columns)
+        W_weighted = conj.(W) .* weight_col
+        W_conj = conj.(W)
+        
+        # M += W_conj^T * W_weighted
+        M .+= transpose(W) * W_weighted
+    end
+    
+    # Apply G scaling
+    M .*= G
+    
+    # Apply N_kernel scaling: M[:, α] *= N_kernel[α]
+    # Use row-wise broadcast: M .* N_kernel' (N_kernel as row vector)
+    N_kernel_row = DevArray(reshape(CT.(N_kernel), 1, :))  # [1, N_alpha] on device
+    M .*= N_kernel_row
+    
+    return M
+end
+
+"""
+    compute_determinant_gpu(omega::Complex, precomputed::PrecomputedData,
+                           devprecomp::DevicePrecomputed{Tgpu}, 
+                           gpu_type, Tcpu::Type) -> Complex{Tcpu}
+
+Compute det(I - M·dα) using GPU for M assembly, then transfer to CPU for determinant.
+Returns result in Tcpu precision.
+"""
+function compute_determinant_gpu(omega::Complex{T}, precomputed::PrecomputedData{T},
+                                devprecomp::DevicePrecomputed{Tgpu,AT},
+                                gpu_type, Tcpu::Type) where {T,Tgpu,AT}
+    
+    # Convert omega to GPU precision
+    omega_gpu = Complex{Tgpu}(omega)
+    
+    # Build M on GPU
+    M_gpu = build_M_matrix_gpu(omega_gpu, devprecomp, gpu_type)
+    
+    # Transfer M to host
+    M_host = Array(M_gpu)
+    
+    # Convert to CPU precision
+    M_cpu = Complex{Tcpu}.(M_host)
+    
+    # d_alpha is already included in N_kernel, so just compute det(I - M)
     N_alpha = precomputed.N_alpha
-    
-    # Compute det(I - M)
-    I_mat = Matrix{Complex{T}}(I, N_alpha, N_alpha)
-    det_val = det(I_mat - M)
+    CT = Complex{Tcpu}
+    I_mat = Matrix{CT}(I, N_alpha, N_alpha)
+    det_val = det(I_mat - M_cpu)
     
     return det_val
 end
 
-"""
-    compute_determinant_batched(omegas, precomputed, backend) -> Vector{Complex}
+# ============================================================================
+# Unified Interface
+# ============================================================================
 
-Compute determinants for multiple ω values.
 """
-function compute_determinant_batched(omegas::Vector{Complex{T}}, precomputed::PrecomputedData{T},
-                                     backend::GPUBackend.GPUBackendType) where T
-    
-    n_omega = length(omegas)
-    det_vals = Vector{Complex{T}}(undef, n_omega)
-    
-    Threads.@threads for i in 1:n_omega
-        det_vals[i] = compute_determinant(omegas[i], precomputed, backend)
+    compute_determinant(omega, precomputed, devprecomp_or_nothing, 
+                       gpu_type, Tcpu) -> Complex{Tcpu}
+
+Unified determinant computation. Routes to GPU or CPU based on devprecomp.
+"""
+function compute_determinant(omega::Complex{T}, precomputed::PrecomputedData{T},
+                            devprecomp::Union{Nothing,DevicePrecomputed},
+                            gpu_type, Tcpu::Type) where T
+    if devprecomp === nothing || gpu_type == GPUBackend.NONE
+        # CPU path
+        return compute_determinant_cpu(omega, precomputed, Tcpu)
+    else
+        # GPU path
+        return compute_determinant_gpu(omega, precomputed, devprecomp, gpu_type, Tcpu)
     end
-    
-    return det_vals
 end
 
-# ============================================================================
-# Condition Number Monitoring
-# ============================================================================
-
 """
-    compute_determinant_with_condition(omega, precomputed, backend) -> (det, cond_num)
+    compute_determinant_batched(omegas, precomputed, devprecomp_or_nothing,
+                               gpu_type, Tcpu; batch_size=100) -> Vector{Complex{Tcpu}}
 
-Compute determinant and condition number for numerical stability monitoring.
+Batched determinant computation for multiple omegas.
 """
-function compute_determinant_with_condition(omega::Complex{T}, precomputed::PrecomputedData{T},
-                                            backend::GPUBackend.GPUBackendType) where T
+function compute_determinant_batched(omegas::Vector{Complex{T}}, 
+                                    precomputed::PrecomputedData{T},
+                                    devprecomp::Union{Nothing,DevicePrecomputed},
+                                    gpu_type, Tcpu::Type;
+                                    batch_size::Int=100) where T
+    n_omega = length(omegas)
+    dets = Vector{Complex{Tcpu}}(undef, n_omega)
     
-    M = build_M_matrix(omega, precomputed, backend)
-    N_alpha = precomputed.N_alpha
+    # Process in batches to avoid memory issues
+    for i_start in 1:batch_size:n_omega
+        i_end = min(i_start + batch_size - 1, n_omega)
+        
+        for i in i_start:i_end
+            dets[i] = compute_determinant(omegas[i], precomputed, devprecomp, 
+                                         gpu_type, Tcpu)
+        end
+        
+        # Synchronize after each batch if on GPU
+        if gpu_type != GPUBackend.NONE
+            GPUBackend.gpu_synchronize()
+        end
+    end
     
-    I_mat = Matrix{Complex{T}}(I, N_alpha, N_alpha)
-    A = I_mat - M
-    
-    det_val = det(A)
-    cond_num = cond(A)
-    
-    return (det_val, cond_num)
+    return dets
+end
+
+# For backward compatibility and debugging
+function build_M_matrix(omega::Complex{T}, precomputed::PrecomputedData{T}) where T
+    return build_M_matrix_cpu(omega, precomputed, T)
 end
 
 end # module MatrixBuilder

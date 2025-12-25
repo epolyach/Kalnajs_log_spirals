@@ -1,72 +1,43 @@
 # Kalnajs Log-Spiral Eigenvalue Solver Configuration
-# Default settings for Toomre-Zang n=4, m=2 disk
+# Parameters matching convergence_table.txt row 1
 
 [physics]
-m = 2                       # Azimuthal mode number
-G = 1.0                     # Gravitational constant
+m = 2
 
 [model]
-L0 = 1.0                    # Angular momentum scale
-n_zang = 4                  # Zang taper exponent
-q1 = 7                      # Velocity dispersion parameter (q_zang = q1 - 1)
+n_zang = 4
+q1 = 7
+G = 1.0
 
 [grid]
-# Radial and eccentricity grid
-NR = 201                    # Radial grid points
-Ne = 21                     # Eccentricity (v) grid points
-Rc_min = 1e-3               # Minimum guiding center radius
-Rc_max = 100.0              # Maximum guiding center radius
-v_min = 0.01                # Minimum circulation (v > 0 for prograde)
+NR = 501
+Ne = 51
+Rc_min = 0.0001
+Rc_max = 100.0
+v_min = 0.01
+N_alpha = 301
+alpha_max = 30.0
+l_min = -100
+l_max = 100
+nw = 100001
+nwa = 2001
 
-# Alpha grid for log-spiral expansion
-N_alpha = 101               # Alpha grid points
-alpha_max = 10.0            # Maximum |α|
-
-# Radial harmonics
-l_min = -25                 # Minimum radial harmonic
-l_max = 25                  # Maximum radial harmonic
-
-# Orbit integration
-nw = 10001                  # Full orbit integration points
-nwa = 201                   # Reduced orbit grid for storage
-
-[scan]
-# Grid scan parameters (fixed for locating approximate zero)
-n_Op = 41                   # Ω_p grid points
-n_gamma = 20                # γ grid points
-Omega_p_min = 0.2           # Min pattern speed
-Omega_p_max = 0.6           # Max pattern speed
-gamma_min = 0.01            # Min growth rate
-gamma_max = 0.2             # Max growth rate
+[precision]
+gpu_double_precision = true
+cpu_double_precision = true
 
 [newton]
-# Newton refinement parameters
-max_iter = 50               # Maximum Newton iterations
-tol = 1e-10                 # Convergence tolerance
-delta = 1e-6                # Finite difference step
-
-# Line search
-use_line_search = true
-max_line_search = 10
-
-# Complex step derivative (more accurate than finite difference)
-use_complex_step = false
-complex_step_h = 1e-20
-
-# Convergence study (parameter exploration for 6-8 digits)
-enable_convergence_study = false
-
-[gpu]
-# GPU backend: "auto", "CUDA", "AMDGPU", "Metal", "CPU"
-backend = "auto"
-precision_double = false    # Use Float32 for speed
-devices = []                # GPU device IDs (empty = auto)
+max_iter = 50
+tol = 1e-12
+delta = 1e-6
+use_line_search = false
 
 [cpu]
-precision_double = false    # Use Float32 for speed
-max_threads = 32            # Maximum BLAS threads
+max_threads = 4   # Limit parallel threads (safe default)
 
 [io]
 output_path = "results"
-save_intermediate = false
-verbose = true
+
+[reference]
+Omega_p = 0.4397142267
+gamma = 0.1230663944

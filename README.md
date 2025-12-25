@@ -10,127 +10,114 @@ The code implements matrix methods for computing non-axisymmetric normal modes i
 - Nonlinear eigenvalue formulations
 - Newton-Raphson searches for unstable modes
 
-## Main Files
-
-### Matrix Method Implementations
-
-- **`Matrix_LogExp.m`** - Linear matrix method using logarithmic-exponential basis based on separable kernel approach (Eq. 28). Computes normal modes for Toomre-Zang and Isochrone models.
-
-- **`Matrix_LogExp_ver2.m`** - Alternative version of the matrix method with modified numerical parameters.
-
-- **`Matrix_LogExp_bk1.m`** - Backup/development version of the matrix method.
-
-- **`Solve_Eq16_LogExp.m`** - Solves Eq. 16 using logarithmic-exponential expansion.
-
-### Zang Method (Logarithmic Spirals)
-
-- **`zang_logspiral.m`** - Main implementation of Zang's (1976) matrix method for hot Mestel disks using logarithmic-spiral expansion. Evaluates eigenvalue λ(ω) of the integral equation for m=2, N=4 cut-out disk at Q≈1.
-
-- **`zang_det_scan.m`** - Scans the complex ω-plane to find zeros of det(I - M·dα) where M is the kernel matrix.
-
-- **`zang_newton_search.m`** - Newton-Raphson search for unstable modes in the Zang formulation.
-
-- **`zang_newton_search1.m`**, **`zang_newton_search_2.m`**, **`zang_newton_search_ver2.m`** - Various versions and refinements of the Newton search algorithm.
-
-- **`zang_newton_search_mp.m`** - Multiple-precision version of the Newton search.
-
-- **`zang_newton_search_mp_parallel.m`** - Parallelized multiple-precision Newton search.
-
-- **`zang_newton_search_ver2_test.m`** - Test script for version 2 of the Newton search.
-
-### Nonlinear Eigenvalue Method
-
-- **`NL_precompute.m`** - Precomputes all ω-independent quantities for the nonlinear eigenvalue method (Eqs. 39-46). Creates data structure for subsequent zero-finding.
-
-- **`NL_grid_scan.m`** - Performs grid scan over the complex ω-plane to locate approximate positions of unstable modes.
-
-- **`NL_newton_search.m`** - Newton-Raphson refinement of mode frequencies found by grid scan.
-
-### Utility Functions
-
-- **`gamma_complex.m`** - Complex gamma function implementation for special function evaluations.
-
-- **`show_zeros.m`** - Visualization utility for displaying eigenvalue zeros in the complex plane.
-
-## Documentation
-
-See **`Matrix_log_exp.pdf`** for detailed mathematical formulation, derivations, and theoretical background of the methods implemented in this code.
-
-## Usage
-
-Typical workflow:
-
-1. Run `NL_precompute.m` to generate orbit data and ω-independent quantities
-2. Run `NL_grid_scan.m` to find approximate mode locations
-3. Use `NL_newton_search.m` to refine mode frequencies
-4. Alternatively, use `zang_logspiral.m` for direct Zang-method calculations
-
-## Dependencies
-
-The code requires MATLAB function libraries located at:
-- `/Users/epolyach/icloud/WORK/Astronomy/Normal_modes/models`
-- `/Users/epolyach/icloud/WORK/Astronomy/Normal_modes/Original_Matlab_C`
-
-(Update these paths in individual files as needed for your system)
-
-## References
-
-- Kalnajs, A. J. 1965, PhD thesis, Harvard University
-- Kalnajs, A. J. 1971, ApJ, 166, 275
-- Zang, T. A. 1976, PhD thesis, MIT
-- Toomre, A. 1981, in "Structure and Evolution of Normal Galaxies"
-
-## Julia Implementation
-
-The `src/KalnajsLogSpiral/` directory contains a complete Julia rewrite of the MATLAB `NL_*.m` codes with:
-
-### Features
-
-- **Vendor-agnostic GPU acceleration** via KernelAbstractions.jl
-  - NVIDIA GPUs (CUDA.jl)
-  - AMD GPUs (AMDGPU.jl / ROCm)
-  - Apple GPUs (Metal.jl)
-  - CPU fallback
-- **Multi-GPU support** for distributed computation
-- **Float32 precision** by default for GPU efficiency
-- **Adaptive Newton refinement** for 6-8 digit precision
-
-### Quick Start
+## Quick Start
 
 ```bash
 # Install dependencies
 julia --project=. -e "using Pkg; Pkg.instantiate()"
 
-# Run with default configuration (multi-threaded)
-julia --threads=4 --project=. run_kalnajs.jl configs/default.toml
+# Run with default configuration (auto-detect GPU)
+julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=auto
 
-# Run with high-resolution config for convergence study
-julia --threads=4 --project=. run_kalnajs.jl configs/highres.toml
+# Run on specific GPUs (e.g., devices 0 and 1)
+julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=01
 
-# Force CPU backend
-julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=CPU
+# Run on CPU only
+julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=CPU
 
-# Force specific GPU backend
-julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=CUDA
-julia --threads=4 --project=. run_kalnajs.jl configs/default.toml --gpu=AMDGPU
+# With BLAS thread limit
+julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=01 --threads=4
 ```
 
-### Module Structure
+## Command-Line Options
 
 ```
-src/KalnajsLogSpiral/
-├── KalnajsLogSpiral.jl     # Main module
-├── GPUBackend.jl           # Vendor-agnostic GPU abstraction
-├── Configuration.jl        # TOML config handling
-├── Models.jl               # Toomre-Zang model
-├── OrbitIntegration.jl     # Orbit calculations
-├── BasisFunctions.jl       # W_l and N_m(α) kernel
-├── MatrixBuilder.jl        # M(ω) matrix construction
-├── GridScan.jl             # Complex ω-plane scanning
-└── NewtonSolver.jl         # Newton-Raphson solver
+Usage: julia --project=. run_kalnajs_gpu.jl [options]
+
+Options:
+  --config=FILE    Configuration file (default: configs/default.toml)
+  --gpu=IDS        GPU device selection:
+                     auto - auto-detect available GPUs
+                     0, 1, 01 - specific device(s)
+                     CPU - force CPU mode
+  --threads=N      BLAS threads limit (default: from config)
+  --help, -h       Show help
 ```
 
-### Reference Values
+## Configuration
+
+Configuration is managed via TOML files in `configs/`. Example (`configs/default.toml`):
+
+```toml
+[physics]
+m = 2                     # Azimuthal mode number
+
+[model]
+n_zang = 4                # Zang cut-out parameter
+q1 = 7                    # Toomre Q parameter
+G = 1.0                   # Gravitational constant
+
+[grid]
+NR = 501                  # Radial grid points
+Ne = 51                   # Energy grid points
+N_alpha = 301             # Alpha integration points
+alpha_max = 30.0          # Maximum alpha
+l_min = -100              # Minimum l index
+l_max = 100               # Maximum l index
+
+[precision]
+gpu_double_precision = true
+cpu_double_precision = true
+
+[newton]
+max_iter = 50
+tol = 1e-12
+delta = 1e-6
+
+[cpu]
+max_threads = 4
+
+[io]
+output_path = "results"
+
+[reference]
+Omega_p = 0.4397142267    # Initial guess for pattern speed
+gamma = 0.1230663944      # Initial guess for growth rate
+```
+
+## Project Structure
+
+```
+ run_kalnajs_gpu.jl          # Main GPU runner script
+ configs/
+   └── default.toml            # Default configuration
+ src/
+   ├── KalnajsLogSpiral.jl     # Main module
+   └── KalnajsLogSpiral/
+       ├── GPUBackend.jl       # Vendor-agnostic GPU abstraction
+       ├── Configuration.jl    # TOML config handling
+       ├── Models.jl           # Toomre-Zang model
+       ├── OrbitIntegration.jl # Orbit calculations
+       ├── BasisFunctions.jl   # W_l and N_m(α) kernel
+       ├── MatrixBuilder.jl    # M(ω) matrix construction
+       ├── GridScan.jl         # Complex ω-plane scanning
+       └── NewtonSolver.jl     # Newton-Raphson solver
+ Matlab/                     # Original MATLAB implementations
+ Matrix_log_exp.pdf          # Mathematical documentation
+ results/                    # Output directory (gitignored)
+```
+
+## Julia Implementation Features
+
+- **Vendor-agnostic GPU acceleration** via KernelAbstractions.jl
+  - NVIDIA GPUs (CUDA.jl)
+  - AMD GPUs (AMDGPU.jl / ROCm)
+  - CPU fallback
+- **Multi-GPU support** for distributed computation
+- **Configurable precision** (Float32/Float64)
+- **Adaptive Newton refinement** for high precision
+
+## Reference Values
 
 For Toomre-Zang n=4, m=2 disk:
 
@@ -139,18 +126,32 @@ For Toomre-Zang n=4, m=2 disk:
 | Zang (1976) | 0.439'426 | 0.127'181 |
 | Polyachenko (refined) | 0.439'442'9284 | 0.127'204'5628 |
 
-### Configuration
+## Standalone Julia Scripts
 
-See `configs/default.toml` for all options. Key precision settings:
+Direct translations of the MATLAB code:
 
-```toml
-[gpu]
-precision_double = false    # Float32 for speed
+```bash
+# CPU version
+julia --project=. NL_julia_direct.jl
 
-[cpu]
-precision_double = false    # Float32 for speed
-max_threads = 32
+# GPU version (CUDA)
+julia --project=. NL_julia_direct_gpu.jl
 ```
+
+## Documentation
+
+See **`Matrix_log_exp.pdf`** for detailed mathematical formulation, derivations, and theoretical background.
+
+## MATLAB Files
+
+Original MATLAB implementations are preserved in the `Matlab/` directory for reference.
+
+## References
+
+- Kalnajs, A. J. 1965, PhD thesis, Harvard University
+- Kalnajs, A. J. 1971, ApJ, 166, 275
+- Zang, T. A. 1976, PhD thesis, MIT
+- Toomre, A. 1981, in "Structure and Evolution of Normal Galaxies"
 
 ## Authors
 

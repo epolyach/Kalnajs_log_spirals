@@ -19,6 +19,7 @@ using TOML
 export KalnajsConfig, PhysicsConfig, ModelConfig, GridConfig
 export ScanConfig, NewtonConfig, GPUConfig, CPUConfig, IOConfig
 export load_config, save_config
+export get_float_type, get_complex_type, get_n_l, get_NPh
 
 # ============================================================================
 # Configuration Structs
@@ -210,6 +211,20 @@ function load_config(filepath::String)
         haskey(n, "enable_convergence_study") && (config.newton.enable_convergence_study = n["enable_convergence_study"])
     end
     
+    # Precision section (alternative to gpu/cpu sections)
+    if haskey(data, "precision")
+        prec = data["precision"]
+        haskey(prec, "gpu_double_precision") && (config.gpu.precision_double = prec["gpu_double_precision"])
+        haskey(prec, "cpu_double_precision") && (config.cpu.precision_double = prec["cpu_double_precision"])
+    end
+    
+    # Precision section (alternative to gpu/cpu sections)
+    if haskey(data, "precision")
+        prec = data["precision"]
+        haskey(prec, "gpu_double_precision") && (config.gpu.precision_double = prec["gpu_double_precision"])
+        haskey(prec, "cpu_double_precision") && (config.cpu.precision_double = prec["cpu_double_precision"])
+    end
+    
     # GPU section
     if haskey(data, "gpu")
         gpu = data["gpu"]
@@ -347,4 +362,8 @@ function get_NPh(config::KalnajsConfig)
     return config.grid.NR * config.grid.Ne
 end
 
+
+# Helper aliases
+precision_gpu(config::KalnajsConfig) = get_float_type(config, true)
+precision_cpu(config::KalnajsConfig) = get_float_type(config, false)
 end # module Configuration
