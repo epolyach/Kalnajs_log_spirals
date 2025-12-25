@@ -232,9 +232,12 @@ for iR in 1:NR, ie in 1:Ne
 end
 F0[.!isfinite.(F0)] .= 0.0; FE[.!isfinite.(FE)] .= 0.0; FL[.!isfinite.(FL)] .= 0.0
 
-println("Computing W_l basis functions...")
+println("Computing W_l basis functions ($(Threads.nthreads()) threads)...")
 W_l = zeros(CT, NR, Ne, N_alpha, n_l)
-for iR in 1:NR, ie in 1:Ne
+# Parallelize over phase-space points
+indices = [(iR, ie) for iR in 1:NR for ie in 1:Ne]
+Threads.@threads for idx in 1:length(indices)
+    iR, ie = indices[idx]
     w1_v = w1[:, iR, ie]; ra_v = ra[:, iR, ie]; pha_v = pha[:, iR, ie]
     if !all(isfinite.(w1_v)) || !all(isfinite.(ra_v)); continue; end
     Sw1 = TrapezoidCoef(w1_v)
