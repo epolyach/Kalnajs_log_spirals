@@ -21,7 +21,7 @@ include("KalnajsLogSpiral/NewtonSolver.jl")
 
 # Re-export key types and functions
 using .Configuration
-export KalnajsConfig, load_config, save_config
+export KalnajsConfig, load_config, load_model, save_config, ReferenceConfig
 export get_float_type, get_complex_type, precision_gpu, precision_cpu
 
 using .GPUBackend

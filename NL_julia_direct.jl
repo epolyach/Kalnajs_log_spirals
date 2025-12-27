@@ -3,15 +3,18 @@
 const HELP_TEXT = """
 Kalnajs Log-Spiral CPU Solver - Standalone Version
 
-Usage: julia --project=. NL_julia_direct.jl [options]
+Usage: julia --project=. NL_julia_direct.jl config.toml model.toml [options]
+
+Arguments:
+  config.toml    Configuration file path
+  model.toml     Model file path
 
 Options:
-  --config=FILE    Configuration file (default: configs/default.toml)
-  --threads=N      BLAS threads limit (default: from config)
+  --threads=N    BLAS threads limit (default: from config)
 
 Examples:
-  julia --project=. NL_julia_direct.jl --config=configs/default.toml
-  julia --project=. NL_julia_direct.jl --config=configs/large.toml --threads=4
+  julia --project=. NL_julia_direct.jl configs/default.toml models/kalnajs_zang4.toml
+  julia --project=. NL_julia_direct.jl configs/large.toml models/kalnajs_zang4.toml --threads=4
 """
 
 start_time = time()
@@ -23,27 +26,49 @@ using TOML
 
 # ==================== CLI PARSING ====================
 function parse_args()
-    config_file = "configs/default.toml"
+    if length(ARGS) < 2
+        println("Error: Insufficient arguments")
+        println(HELP_TEXT)
+        exit(1)
+    end
+    
+    if ARGS[1] == "--help" || ARGS[1] == "-h"
+        println(HELP_TEXT)
+        exit(0)
+    end
+    
+    config_file = ARGS[1]
+    model_file = ARGS[2]
     threads_override = nothing
     
-    for arg in ARGS
-        if startswith(arg, "--config=")
-            config_file = split(arg, "=")[2]
-        elseif startswith(arg, "--threads=")
+    for arg in ARGS[3:end]
+        if startswith(arg, "--threads=")
             threads_override = parse(Int, split(arg, "=")[2])
         elseif arg == "--help" || arg == "-h"
             println(HELP_TEXT)
             exit(0)
         end
     end
-    return config_file, threads_override
+    return config_file, model_file, threads_override
 end
 
-config_file, threads_override = parse_args()
+config_file, model_file, threads_override = parse_args()
+
+# Validate input files
+if !isfile(config_file)
+    println("Error: Configuration file not found: $config_file")
+    exit(1)
+end
+if !isfile(model_file)
+    println("Error: Model file not found: $model_file")
+    exit(1)
+end
 
 # ==================== LOAD CONFIG ====================
 println("Loading config: $config_file")
+println("Loading model:  $model_file")
 config = TOML.parsefile(config_file)
+model_data = TOML.parsefile(model_file)
 
 # Apply thread limit
 max_threads = get(get(config, "cpu", Dict()), "max_threads", 4)
@@ -61,16 +86,24 @@ const CT = USE_FLOAT32 ? ComplexF32 : ComplexF64
 println("=" ^ 60)
 println("KALNAJS LOG-SPIRAL CPU SOLVER")
 println("=" ^ 60)
-println("Config:    $config_file")
+println("Config: $config_file")
+println("Model:  $model_file")
 println("Precision: ", USE_FLOAT32 ? "Float32" : "Float64")
 println("BLAS threads: $max_threads")
 println()
 
-# ==================== PARAMETERS FROM CONFIG ====================
-const m = config["physics"]["m"]
+# ==================== PARAMETERS FROM CONFIG AND MODEL ====================
+# From model file
+const m = model_data["physics"]["m"]
+const G = FT(model_data["model"]["G"])
+const n_zang = model_data["model"]["n_zang"]
+const q1 = model_data["model"]["q1"]
+const ref_Omega_p = get(get(model_data, "reference", Dict()), "Omega_p", 0.44)
+const ref_gamma = get(get(model_data, "reference", Dict()), "gamma", 0.13)
+
+# From config file
 const l_min = config["grid"]["l_min"]
 const l_max = config["grid"]["l_max"]
-const G = FT(config["model"]["G"])
 const N_alpha = config["grid"]["N_alpha"]
 const alpha_max = FT(config["grid"]["alpha_max"])
 const NR = config["grid"]["NR"]
@@ -89,17 +122,14 @@ const max_iter = get(config["newton"], "max_iter", 30)
 const newton_tol = USE_FLOAT32 ? 1e-7 : get(config["newton"], "tol", 1e-10)
 const delta = get(config["newton"], "delta", 1e-6)
 
-const ref_Omega_p = get(config["reference"], "Omega_p", 0.44)
-const ref_gamma = get(config["reference"], "gamma", 0.13)
-
+println("Model: n_zang=$n_zang, q1=$q1")
 println("Grid: NR=$NR, Ne=$Ne, N_alpha=$N_alpha, l=[$l_min,$l_max], NPh=$NPh")
 
 # ==================== TOOMRE-ZANG MODEL ====================
 const L0 = 1.0
-const n_zang = config["model"]["n_zang"]
-const q1 = config["model"]["q1"]
 const sigma_r0 = 1.0 / sqrt(q1)
 const q_zang = q1 - 1
+const CONST_DF = 1.0 / (2.0 * π * 2.0^(q_zang/2) * sqrt(π) * gamma((q_zang + 1)/2) * sigma_r0^(q_zang + 2))
 const CONST_DF = 1.0 / (2.0 * π * 2.0^(q_zang/2) * sqrt(π) * gamma((q_zang + 1)/2) * sigma_r0^(q_zang + 2))
 
 V(r) = log(r)

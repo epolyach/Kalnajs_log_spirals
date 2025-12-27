@@ -18,7 +18,7 @@ using TOML
 
 export KalnajsConfig, PhysicsConfig, ModelConfig, GridConfig
 export ScanConfig, NewtonConfig, GPUConfig, CPUConfig, IOConfig
-export load_config, save_config
+export load_config, load_model, save_config, ReferenceConfig
 export get_float_type, get_complex_type, get_n_l, get_NPh
 
 # ============================================================================
@@ -125,6 +125,14 @@ Base.@kwdef mutable struct IOConfig
     verbose::Bool = true
 end
 
+
+"""
+Reference values for validation
+"""
+Base.@kwdef mutable struct ReferenceConfig
+    Omega_p::Float64 = 0.44    # Expected pattern speed
+    gamma::Float64 = 0.13      # Expected growth rate
+end
 """
 Complete configuration
 """
@@ -137,6 +145,7 @@ Base.@kwdef mutable struct KalnajsConfig
     gpu::GPUConfig = GPUConfig()
     cpu::CPUConfig = CPUConfig()
     io::IOConfig = IOConfig()
+    reference::ReferenceConfig = ReferenceConfig()
 end
 
 # ============================================================================
@@ -246,6 +255,45 @@ function load_config(filepath::String)
         haskey(io, "output_path") && (config.io.output_path = io["output_path"])
         haskey(io, "save_intermediate") && (config.io.save_intermediate = io["save_intermediate"])
         haskey(io, "verbose") && (config.io.verbose = io["verbose"])
+    end
+    
+    return config
+end
+
+"""
+    load_model(config::KalnajsConfig, filepath::String) -> KalnajsConfig
+
+Load model parameters from a TOML file and apply them to config.
+Model file can contain [physics], [model], and [reference] sections.
+"""
+function load_model(config::KalnajsConfig, filepath::String)
+    if !isfile(filepath)
+        error("Model file not found: $filepath")
+    end
+    
+    data = TOML.parsefile(filepath)
+    
+    # Physics section from model
+    if haskey(data, "physics")
+        p = data["physics"]
+        haskey(p, "m") && (config.physics.m = p["m"])
+        haskey(p, "G") && (config.physics.G = p["G"])
+    end
+    
+    # Model section
+    if haskey(data, "model")
+        m = data["model"]
+        haskey(m, "L0") && (config.model.L0 = m["L0"])
+        haskey(m, "n_zang") && (config.model.n_zang = m["n_zang"])
+        haskey(m, "q1") && (config.model.q1 = m["q1"])
+        haskey(m, "G") && (config.physics.G = m["G"])  # G can be in model section too
+    end
+    
+    # Reference section
+    if haskey(data, "reference")
+        r = data["reference"]
+        haskey(r, "Omega_p") && (config.reference.Omega_p = r["Omega_p"])
+        haskey(r, "gamma") && (config.reference.gamma = r["gamma"])
     end
     
     return config

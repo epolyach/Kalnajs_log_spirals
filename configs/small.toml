@@ -1,13 +1,5 @@
 # Kalnajs Log-Spiral Eigenvalue Solver Configuration
-# Parameters matching convergence_table.txt row 1
-
-[physics]
-m = 2
-
-[model]
-n_zang = 4
-q1 = 7
-G = 1.0
+# Small/fast grid for testing
 
 [grid]
 NR = 61
@@ -33,11 +25,7 @@ delta = 1e-6
 use_line_search = false
 
 [cpu]
-max_threads = 4   # Limit parallel threads (safe default)
+max_threads = 4
 
 [io]
 output_path = "results"
-
-[reference]
-Omega_p = 0.4397142267
-gamma = 0.1230663944

@@ -1,0 +1,21 @@
+# Kalnajs Log-Spiral Model - Zang n=4
+
+[metadata]
+name = "Kalnajs Log-Spiral n_zang=4"
+description = "Kalnajs log-spiral disk model with Zang distribution function (n=4)"
+model_type = "KalnajsLogSpiral"
+reference = "Kalnajs (1976) ApJ 205, 751; Zang (1976) thesis"
+version = "1.0"
+
+[model]
+type = "KalnajsLogSpiral"
+n_zang = 4              # Zang distribution function index
+q1 = 7                  # Angular momentum cutoff parameter
+G = 1.0                 # Gravitational constant
+
+[physics]
+m = 2                   # Azimuthal mode number (2 = bar mode)
+
+[reference]
+Omega_p = 0.4397142267  # Expected pattern speed
+gamma = 0.1230663944    # Expected growth rate

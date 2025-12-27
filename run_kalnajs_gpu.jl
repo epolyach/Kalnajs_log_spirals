@@ -3,17 +3,19 @@
 const HELP_TEXT = """
 Kalnajs Log-Spiral GPU Runner - Modular Package Version
 
-Usage: julia --project=. run_kalnajs_gpu.jl [options]
+Usage: julia --project=. run_kalnajs_gpu.jl config.toml model.toml [options]
+
+Arguments:
+  config.toml    Configuration file path
+  model.toml     Model file path
 
 Options:
-  --config=FILE    Configuration file (default: configs/default.toml)
   --gpu=IDS        GPU device selection (auto, 0, 1, 01, CPU)
   --threads=N      BLAS threads limit (default: from config)
 
 Examples:
-  julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=auto
-  julia --project=. run_kalnajs_gpu.jl --config=configs/large.toml --gpu=01 --threads=4
-  JULIA_NUM_THREADS=2 julia --project=. run_kalnajs_gpu.jl --config=configs/default.toml --gpu=01
+  julia --project=. run_kalnajs_gpu.jl configs/default.toml models/kalnajs_zang4.toml --gpu=auto
+  julia --project=. run_kalnajs_gpu.jl configs/large.toml models/kalnajs_zang4.toml --gpu=01 --threads=4
 """
 using Pkg
 Pkg.activate(".")
@@ -115,37 +117,50 @@ end
 
 # Parse arguments
 function parse_arguments()
-    config_file = "configs/default.toml"
+    if length(ARGS) < 2
+        println("Error: Insufficient arguments")
+        println(HELP_TEXT)
+        exit(1)
+    end
+    
+    if ARGS[1] == "--help" || ARGS[1] == "-h"
+        println(HELP_TEXT)
+        exit(0)
+    end
+    
+    config_file = ARGS[1]
+    model_file = ARGS[2]
     gpu_spec = "auto"
     threads = nothing
     
-    for arg in ARGS
-        if startswith(arg, "--config=")
-            config_file = String(split(arg, "=")[2])
-        elseif startswith(arg, "--gpu=")
+    for arg in ARGS[3:end]
+        if startswith(arg, "--gpu=")
             gpu_spec = split(arg, "=")[2]
         elseif startswith(arg, "--threads=")
             threads = parse(Int, split(arg, "=")[2])
         elseif arg == "--help" || arg == "-h"
             println(HELP_TEXT)
             exit(0)
-        elseif !startswith(arg, "--")
-            # Backward compatibility: first positional argument is config
-            config_file = arg
         end
     end
     
-    return config_file, gpu_spec, threads
+    return config_file, model_file, gpu_spec, threads
 end
 
-config_file, gpu_spec, threads_arg = parse_arguments()
+config_file, model_file, gpu_spec, threads_arg = parse_arguments()
 
 if !isfile(config_file)
     println("Error: Configuration file not found: $config_file")
     exit(1)
 end
 
+if !isfile(model_file)
+    println("Error: Model file not found: $model_file")
+    exit(1)
+end
+
 config = KalnajsLogSpiral.load_config(config_file)
+config = KalnajsLogSpiral.load_model(config, model_file)
 start_global_logging(config)
 
 log_println()
@@ -153,6 +168,8 @@ log_println("="^60)
 log_println("KALNAJS LOG-SPIRAL EIGENVALUE SOLVER - GPU VERSION")
 log_println("="^60)
 log_println("Started: ", Dates.format(Dates.now(), "yyyy-mm-dd HH:MM:SS"))
+log_println("Config: $config_file")
+log_println("Model:  $model_file")
 log_println()
 
 # GPU Setup
@@ -244,7 +261,7 @@ log_println("Newton: max_iter = ", config.newton.max_iter, ", tol = ", config.ne
 log_println()
 
 # Reference values
-log_println("Reference: Ω_p = 0.439'442'9284, γ = 0.127'204'5628")
+log_println(@sprintf("Reference: Ω_p = %.10f, γ = %.10f", config.reference.Omega_p, config.reference.gamma))
 log_println()
 
 start_time = time()
@@ -275,8 +292,8 @@ try
     log_println("="^60)
     
     # Use reference values as initial guess
-    Omega_p_init = Tcpu(0.44)
-    gamma_init = Tcpu(0.13)
+    Omega_p_init = Tcpu(config.reference.Omega_p)
+    gamma_init = Tcpu(config.reference.gamma)
     
     log_println()
     log_println(@sprintf("Using reference initial guess: Ω_p = %.8f, γ = %.8f", Omega_p_init, gamma_init))
